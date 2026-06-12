@@ -80,8 +80,12 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
          ascent::internal::comment(#msg);
          {
             let _scc_start_time = ::ascent::internal::Instant::now();
-            #scc_compiled
+            let __scc_completed: bool = ascent::internal::run_rule(|| {
+               #scc_compiled
+               true
+            });
             _self.scc_times[#i] += _scc_start_time.elapsed();
+            if !__scc_completed { __handle_scc_timeout!(); }
          }
       });
    }
@@ -184,6 +188,7 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
          pub fn run(&mut self) {
             #![allow(clippy::all)]
             macro_rules! __check_return_conditions {() => {};}
+            macro_rules! __handle_scc_timeout {() => {};}
             #run_usings
             self.update_indices_priv();
             let _self = self;
@@ -202,6 +207,7 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
             macro_rules! __check_return_conditions {() => {
                if timeout < ::std::time::Duration::MAX && __start_time.elapsed() >= timeout {return false;}
             };}
+            macro_rules! __handle_scc_timeout {() => { return false; };}
             #run_usings
             self.update_indices_priv();
             let _self = self;
@@ -215,6 +221,7 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
    } else {
       quote! {
          macro_rules! __check_return_conditions {() => {};}
+         macro_rules! __handle_scc_timeout {() => {};}
          #run_usings
          let _self = &mut __run_res;
          #(#relation_initializations)*
@@ -561,7 +568,9 @@ fn compile_mir_scc(mir: &AscentMir, scc_ind: usize) -> proc_macro2::TokenStream 
             ascent::internal::comment(#msg);
             __scope.spawn(|_| {
                #before_rule_var
-               #rule_compiled
+               ascent::internal::run_rule(|| {
+                  #rule_compiled
+               });
                #update_rule_time_field
             });
          }
@@ -569,9 +578,9 @@ fn compile_mir_scc(mir: &AscentMir, scc_ind: usize) -> proc_macro2::TokenStream 
          quote! {
             #before_rule_var
             ascent::internal::comment(#msg);
-            {
+            ascent::internal::run_rule(|| {
                #rule_compiled
-            }
+            });
             #update_rule_time_field
          }
       });
@@ -768,17 +777,21 @@ fn compile_update_indices_function_body(mir: &AscentMir) -> proc_macro2::TokenSt
       };
       if !par {
          res.push(quote_spanned! {r.name.span()=>
-            for (_i, tuple) in #_self.#rel_name.iter().enumerate() {
-               #maybe_lock
-               #(#update_indices)*
-            }
+            ascent::internal::run_rule(|| {
+               for (_i, tuple) in #_self.#rel_name.iter().enumerate() {
+                  #maybe_lock
+                  #(#update_indices)*
+               }
+            });
          });
       } else {
          res.push(quote_spanned! {r.name.span()=>
-            (0..#_self.#rel_name.len()).into_par_iter().for_each(|_i| {
-               let tuple = &#_self.#rel_name[_i];
-               #maybe_lock
-               #(#update_indices)*
+            ascent::internal::run_rule(|| {
+               (0..#_self.#rel_name.len()).into_par_iter().for_each(|_i| {
+                  let tuple = &#_self.#rel_name[_i];
+                  #maybe_lock
+                  #(#update_indices)*
+               });
             });
          });
       }
@@ -1123,7 +1136,7 @@ fn head_update_code(rule: &MirRule, scc: &MirScc, mir: &AscentMir) -> proc_macro
       if let Some(rel_indices) = rel_indices {
          for rel_ind in rel_indices.iter().sorted_by_cached_key(|rel| rel.ir_name()) {
             if rel_ind.is_full_index() {
-               continue
+               continue;
             };
             let var_name = if !mir.is_parallel {
                expr_for_rel_write(&MirRelation::from(rel_ind.clone(), New), mir)
@@ -1396,14 +1409,20 @@ fn clause_var_assignments(
             } else {
                quote! {}
             };
-            assignments.insert(0, quote! {
-               let __row = &#relation_expr[*#val_ident]#maybe_lock #maybe_clone;
-            });
+            assignments.insert(
+               0,
+               quote! {
+                  let __row = &#relation_expr[*#val_ident]#maybe_lock #maybe_clone;
+               },
+            );
          },
          IndexValType::Direct(_) => {
-            assignments.insert(0, quote! {
-               let #val_ident = #val_ident.tuple_of_borrowed();
-            });
+            assignments.insert(
+               0,
+               quote! {
+                  let #val_ident = #val_ident.tuple_of_borrowed();
+               },
+            );
          },
       }
    }
