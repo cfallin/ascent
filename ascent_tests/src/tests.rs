@@ -886,6 +886,41 @@ fn test_run_timeout() {
 }
 
 #[test]
+fn test_run_fuel() {
+   ascent! {
+      #![generate_run_timeout]
+      /// A diverging Ascent program
+      struct DivergingFuel;
+      /// foooooooooooo
+      relation foo(u128);
+      foo(0);
+      foo(x + 1) <-- foo(x);
+   }
+
+   // A tiny budget stops the diverging program and returns false.
+   let mut prog = DivergingFuel::default();
+   assert!(!prog.run_fuel(100));
+   assert!(prog.__total_tuple_count() > 0);
+
+   // A converging program returns true and matches run() exactly.
+   ascent! {
+      #![generate_run_timeout]
+      struct ConvergingFuel;
+      relation num(u32);
+      relation reach(u32, u32);
+      num(0); num(1); num(2); num(3);
+      reach(x, x) <-- num(x);
+      reach(x, z) <-- reach(x, y), reach(y, z);
+   }
+   let mut huge = ConvergingFuel::default();
+   assert!(huge.run_fuel(1_000_000));
+   let mut plain = ConvergingFuel::default();
+   plain.run();
+   assert_eq!(huge.__total_tuple_count(), plain.__total_tuple_count());
+   assert_eq!(huge.reach.len(), plain.reach.len());
+}
+
+#[test]
 fn test_ascent_bounded_set() {
    use ascent::lattice::bounded_set::BoundedSet;
    ascent_m_par! { struct AscentProgram<const N: usize>;

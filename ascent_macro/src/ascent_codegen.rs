@@ -92,6 +92,8 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
 
    let update_indices_body = compile_update_indices_function_body(mir);
    let relation_sizes_body = compile_relation_sizes_body(mir);
+   let relation_byte_summary_body = compile_relation_byte_summary_body(mir);
+   let total_tuple_count_body = compile_total_tuple_count_body(mir);
    let scc_times_summary_body = compile_scc_times_summary_body(mir);
 
    let mut type_constraints = vec![];
@@ -216,6 +218,25 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
          }
       }
    };
+   let run_fuel_func = if !generate_run_timeout {
+      quote! {}
+   } else {
+      quote! {
+         #[allow(unused_imports, noop_method_call, suspicious_double_ref_op)]
+         #[doc = "Runs the Ascent program to a fixed point or until the total number of tuples across all relations exceeds `max_tuples`. In case the budget is exceeded returns false (true on convergence within budget). The check is performed once per SCC iteration."]
+         pub fn run_fuel(&mut self, max_tuples: usize) -> bool {
+            #run_usings
+            self.update_indices_priv();
+            let _self = self;
+            macro_rules! __check_return_conditions {() => {
+               if _self.__total_tuple_count() > max_tuples {return false;}
+            };}
+            macro_rules! __handle_scc_timeout {() => { return false; };}
+            #(#sccs_compiled)*
+            true
+         }
+      }
+   };
    let run_code = if !is_ascent_run {
       quote! {}
    } else {
@@ -287,6 +308,8 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
          #run_func
 
          #run_timeout_func
+
+         #run_fuel_func
          // TODO remove pub update_indices at some point
          #[allow(noop_method_call, suspicious_double_ref_op)]
          fn update_indices_priv(&mut self) {
@@ -309,6 +332,16 @@ pub(crate) fn compile_mir(mir: &AscentMir, is_ascent_run: bool) -> proc_macro2::
          pub fn relation_sizes_summary(&self) -> String {
             #![allow(clippy::all)]
             #relation_sizes_body
+         }
+         #[doc = "Total number of tuples across all relations (the fuel metric used by run_fuel)."]
+         pub fn __total_tuple_count(&self) -> usize {
+            #![allow(clippy::all)]
+            #total_tuple_count_body
+         }
+         #[doc = "Per-relation `<name>\\t<tuple count>\\t<size_of tuple in bytes>` lines (raw Vec storage, excludes index overhead)."]
+         pub fn __relation_byte_summary(&self) -> String {
+            #![allow(clippy::all)]
+            #relation_byte_summary_body
          }
          pub fn scc_times_summary(&self) -> String {
             #![allow(clippy::all)]
@@ -668,6 +701,40 @@ fn compile_relation_sizes_body(mir: &AscentMir) -> proc_macro2::TokenStream {
       let mut res = String::new();
       #(#write_sizes)*
       res
+   }
+}
+
+fn compile_relation_byte_summary_body(mir: &AscentMir) -> proc_macro2::TokenStream {
+   let mut writes = vec![];
+   for r in mir.relations_ir_relations.keys().sorted_by_key(|r| &r.name) {
+      let rel_name = &r.name;
+      let rel_name_str = r.name.to_string();
+      let tuple_ty = tuple_type(&r.field_types);
+      writes.push(quote! {
+         writeln!(&mut res, "{}\t{}\t{}", #rel_name_str, self.#rel_name.len(),
+                  std::mem::size_of::<#tuple_ty>()).unwrap();
+      });
+   }
+   quote! {
+      use std::fmt::Write;
+      let mut res = String::new();
+      #(#writes)*
+      res
+   }
+}
+
+fn compile_total_tuple_count_body(mir: &AscentMir) -> proc_macro2::TokenStream {
+   let mut adds = vec![];
+   for r in mir.relations_ir_relations.keys().sorted_by_key(|r| &r.name) {
+      let rel_name = &r.name;
+      adds.push(quote! {
+         __total += self.#rel_name.len();
+      });
+   }
+   quote! {
+      let mut __total: usize = 0;
+      #(#adds)*
+      __total
    }
 }
 
